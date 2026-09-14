@@ -44,21 +44,27 @@
 #define MODEL_HEAD_WEIGHTS_SIZE 96
 
 // Lo que hace "extern" es declarar que estas variables están definidas en otro archivo, y que se pueden usar en este archivo.
-extern const char *const model_labels[MODEL_CLASS_COUNT];
-extern const uint8_t model_expected_class[MODEL_SAMPLE_COUNT];
-extern const uint8_t model_inputs[MODEL_SAMPLE_COUNT][MODEL_INPUT_SIZE];
+// Esto es útil cuando más de un archivo necesita acceder a la misma variable, si lo definieramos en este archivo.
+// si hay m'as de un archivo .c que define la misma variable, el compilador mostrará un error de "multiple definition". 
+// Por eso, se define en un archivo .c y se declara en un archivo .h para que otros archivos puedan usarla sin definirla de nuevo.
+// Si una variable se creó en un archivo .c y se quiere usar en otro archivo .c, se debe declarar en un archivo .h y luego incluir ese archivo .h en ambos archivos .c.
+// Si se cambia el valor de la variable en un archivo .c, el cambio se reflejará en todos los archivos .c que incluyan el archivo .h donde se declaró la variable.
+extern const char *const model_labels[MODEL_CLASS_COUNT]; // Etiquetas de las clases
+extern const uint8_t model_expected_class[MODEL_SAMPLE_COUNT]; // Clase esperada para cada muestra
+extern const uint8_t model_inputs[MODEL_SAMPLE_COUNT][MODEL_INPUT_SIZE]; // Entradas de las muestras (imágenes de 10x10 en escala de grises)
 
 extern const uint8_t
-    model_expected_stem[MODEL_SAMPLE_COUNT][MODEL_STEM_SIZE];
-extern const uint8_t model_expected_dw[MODEL_SAMPLE_COUNT][MODEL_DW_SIZE];
-extern const uint8_t model_expected_pw[MODEL_SAMPLE_COUNT][MODEL_PW_SIZE];
+    model_expected_stem[MODEL_SAMPLE_COUNT][MODEL_STEM_SIZE]; // Salida esperada de la capa stem para cada muestra
+extern const uint8_t model_expected_dw[MODEL_SAMPLE_COUNT][MODEL_DW_SIZE]; // Salida esperada de la capa depthwise para cada muestra
+extern const uint8_t model_expected_pw[MODEL_SAMPLE_COUNT][MODEL_PW_SIZE]; // Salida esperada de la capa pointwise para cada muestra
 extern const uint8_t
-    model_expected_head[MODEL_SAMPLE_COUNT][MODEL_HEAD_SIZE];
+    model_expected_head[MODEL_SAMPLE_COUNT][MODEL_HEAD_SIZE]; // Salida esperada de la capa head para cada muestra
 
-extern const uint8_t model_stem_weights[MODEL_STEM_WEIGHTS_SIZE];
-extern const uint8_t model_dw_weights[MODEL_DW_WEIGHTS_SIZE];
-extern const uint8_t model_pw_weights[MODEL_PW_WEIGHTS_SIZE];
-extern const uint8_t model_head_weights[MODEL_HEAD_WEIGHTS_SIZE];
+extern const uint8_t model_stem_weights[MODEL_STEM_WEIGHTS_SIZE]; // Pesos de la capa stem
+extern const uint8_t model_dw_weights[MODEL_DW_WEIGHTS_SIZE]; // Pesos de la capa depthwise
+extern const uint8_t model_pw_weights[MODEL_PW_WEIGHTS_SIZE]; // Pesos de la capa pointwise
+extern const uint8_t model_head_weights[MODEL_HEAD_WEIGHTS_SIZE]; // Pesos de la capa head
 
+// Las variables "expected" son las salidas esperadas de cada capa para cada muestra, y se usan para verificar que la implementación de la red neuronal está funcionando correctamente.
 #endif
 

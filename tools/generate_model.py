@@ -46,20 +46,21 @@ def conv_valid(
             window = input_hwc[
                 h_out : h_out + kernel_h, w_out : w_out + kernel_w, :
             ] # window es la ventana de entrada que se va a convolucionar, seleccionada de la entrada original. Es decir,
-            # extrae la ventana. ejemplo: si kernel_h=3 y kernel_w=3, entonces window será un bloque de 3x3 de la entrada en la posición (h_out, w_out)
+            # extrae la ventana. ejemplo: si kernel_h=3 y kernel_w=3, entonces window será un bloque de 3x3 de la entrada 
+            # en la posición (h_out, w_out).
             # windows es un arreglo de dimensiones (kernel_h, kernel_w, input_c).
-            if depthwise:
+            if depthwise: # Para convolución depthwise, cada canal de salida se calcula usando solo su correspondiente canal de entrada y su kernel.
                 for channel in range(output_c):
                     output[h_out, w_out, channel] = np.sum(
                         window[:, :, channel] * weights_oihw[channel, 0]
                     )
-            else:
+            else: # Para convolución estándar, cada canal de salida se calcula usando todos los canales de entrada y sus correspondientes kernels.
                 for channel in range(output_c):
                     kernel_hwc = weights_oihw[channel].transpose(1, 2, 0)
                     output[h_out, w_out, channel] = np.sum(window * kernel_hwc)
 
-    output = np.maximum(output, 0)
-    output = output >> shift
+    output = np.maximum(output, 0) # Aplica ReLU, estableciendo todos los valores negativos a cero.
+    output = output >> shift # Aplica el shift a la derecha para la requantización. Esto es equivalente a dividir por 2^shift.
     return np.clip(output, 0, 255).astype(np.uint8)
 
 

@@ -27,17 +27,26 @@ def conv_valid(
     depthwise: bool = False,
 ) -> np.ndarray:
     """Integer convolution matching N-EUREKA norm/requant semantics."""
-    kernel_h, kernel_w = weights_oihw.shape[2:]
-    output_h = input_hwc.shape[0] - kernel_h + 1
-    output_w = input_hwc.shape[1] - kernel_w + 1
-    output_c = weights_oihw.shape[0]
-    output = np.zeros((output_h, output_w, output_c), dtype=np.int64)
+    # Esta función implementa una convolución entera de referencia. Recibe un tensor de entrada, los pesos de una capa
+    # convolucional y ejecuta manualmente la convolución, seguida de ReLU + shift/recuantización + saturación a uint8.
+
+    # La idea es que el resultado calculado por esta función sea el que después N-EUREKA debería reproducir.
+    # weights_oihw contiene los pesos en formato O (canales de salida) x I (canales de entrada) x H (alto kernel) x W (ancho kernel)
+    # input_hwc contiene la entrada en formato H (alto) x W (ancho) x C (canales)
+    kernel_h, kernel_w = weights_oihw.shape[2:] # kernel_h y kernel_w son las dimensiones del kernel de convolución
+    output_h = input_hwc.shape[0] - kernel_h + 1 # output_h es la altura de la salida después de la convolución válida
+    output_w = input_hwc.shape[1] - kernel_w + 1 # output_w es la anchura de la salida después de la convolución válida
+    output_c = weights_oihw.shape[0] # output_c es el número de canales de salida, que corresponde al número de filtros en la capa convolucional
+    output = np.zeros((output_h, output_w, output_c), dtype=np.int64) # output es el tensor de salida inicializado a cero, con dimensiones (altura de salida, anchura de salida, canales de salida)
 
     for h_out in range(output_h):
         for w_out in range(output_w):
+            # recorre cada posición de la salida y calcula la convolución correspondiente
             window = input_hwc[
                 h_out : h_out + kernel_h, w_out : w_out + kernel_w, :
-            ]
+            ] # window es la ventana de entrada que se va a convolucionar, seleccionada de la entrada original. Es decir,
+            # extrae la ventana. ejemplo: si kernel_h=3 y kernel_w=3, entonces window será un bloque de 3x3 de la entrada en la posición (h_out, w_out)
+            # windows es un arreglo de dimensiones (kernel_h, kernel_w, input_c).
             if depthwise:
                 for channel in range(output_c):
                     output[h_out, w_out, channel] = np.sum(

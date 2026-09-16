@@ -32,7 +32,7 @@ def conv_valid(
 
     # La idea es que el resultado calculado por esta función sea el que después N-EUREKA debería reproducir.
     # weights_oihw contiene los pesos en formato O (canales de salida) x I (canales de entrada) x H (alto kernel) x W (ancho kernel)
-    # input_hwc contiene la entrada en formato H (alto) x W (ancho) x C (canales)
+    # input_hwc contiene la entrada en formato H (alto) x W (ancho) x C (canales).
     kernel_h, kernel_w = weights_oihw.shape[2:] # kernel_h y kernel_w son las dimensiones del kernel de convolución
     output_h = input_hwc.shape[0] - kernel_h + 1 # output_h es la altura de la salida después de la convolución válida
     output_w = input_hwc.shape[1] - kernel_w + 1 # output_w es la anchura de la salida después de la convolución válida

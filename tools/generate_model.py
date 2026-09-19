@@ -394,7 +394,7 @@ def make_inputs():
     inputs.append(diagonal)
 
     return inputs
-
+ 
 
 def c_array(name: str, values: np.ndarray, dimensions: str = "") -> str:
     flat = values.astype(np.uint8).flatten()

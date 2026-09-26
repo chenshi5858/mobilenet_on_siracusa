@@ -127,7 +127,7 @@ static int configure_task(nnx_task_t *task, const layer_config_t *layer,
 incluyendo un puntero a los datos reales, las dimensiones de la entrada (altura, ancho y profundidad) y el ancho de bits de los datos 
 (en este caso, 8 bits). Esta descripción se utiliza para informar a N-EUREKA sobre cómo interpretar los datos de entrada durante la operación de 
 convolución*/
-  nnx_feature_t output_desc = {.data = output,
+  nnx_feature_t output_desc = {.data = output, // output es un puntero a los datos de salida de la capa, representa dónde quedará guardadda la salida después de la convolución.
                                .height = layer->output_h,
                                .width = layer->output_w,
                                .depth = layer->output_c,
@@ -143,9 +143,10 @@ convolución*/
       .bitwidth = 8,
       .offset_factor = -128, // offset_factor es un valor que se utiliza para ajustar los valores de los pesos durante la operación de convolución. En este caso, se establece en -128, lo que significa que se restará 128 a cada valor de peso antes de realizar la operación de convolución. Esto es útil cuando los pesos se almacenan en un formato de 8 bits sin signo (0 a 255), pero se desea que tengan un rango centrado alrededor de cero (-128 a 127). Al restar 128, los valores de peso se ajustan para que puedan representar tanto valores positivos como negativos durante la operación de convolución.
       .offset_mode = weightOffsetModeLayerWise, // offset_mode es un valor que indica cómo se aplicará el offset_factor a los pesos durante la operación de convolución. En este caso, se establece en weightOffsetModeLayerWise, lo que significa que el offset_factor se aplicará de manera uniforme a todos los pesos de la capa. Esto asegura que todos los pesos se ajusten de la misma manera, manteniendo la coherencia en la operación de convolución y evitando sesgos no deseados en los resultados.
-  };
+  }; // weights_desc es una estructura que define la descripción de los pesos para la tarea de N-EUREKA. Contiene información sobre los datos de los pesos, incluyendo un puntero a los datos reales, las dimensiones del kernel (altura y ancho), la profundidad de los pesos (que corresponde al número de canales de entrada), el número de filtros (n_weights) que se aplicarán a la entrada, el ancho de bits de los pesos (bitwidth), un factor de compensación (offset_factor) para ajustar los valores de los pesos y un modo de compensación (offset_mode) que indica cómo se aplicará el factor de compensación a los pesos durante la operación de convolución.
 
   nnx_error_code status;
+  /* Se configura task->cfg según el tipo de convolución, todavía no ejecutan la convolución*/
   if (layer->operation == LAYER_CONV_1X1) {
     status = nnx_conv_1x1(&task->cfg, weights_desc, input_desc, output_desc); // Esta función está definida en pulp_nnx_hal.c y configura la tarea de N-EUREKA para realizar una operación de convolución 1x1. Toma como parámetros un puntero a la configuración de la tarea, una descripción de los pesos, una descripción de las características de entrada y una descripción de las características de salida. La función devuelve un código de error que indica si la configuración fue exitosa o si hubo algún problema durante el proceso.
   } else if (layer->operation == LAYER_DEPTHWISE_3X3) {
@@ -167,15 +168,43 @@ convolución*/
     return -1;
   }
 
-  BIT_SET(task->cfg.conf0, NEUREKA_FLAG_USE_TCDM);
-  task->infeat_ptr = (uint32_t)input;
-  task->outfeat_ptr = (uint32_t)output;
-  task->weights_ptr = (uint32_t)packed_weights;
-  task->scale_ptr = (uint32_t)scale_l1;
-  task->scale_shift_ptr = 0;
-  task->scale_bias_ptr = (uint32_t)bias_l1;
+  BIT_SET(task->cfg.conf0, NEUREKA_FLAG_USE_TCDM); // BIT_SET es una macro que se utiliza para establecer un bit específico en un registro de configuración. En este caso, se está estableciendo el bit NEUREKA_FLAG_USE_TCDM en el registro conf0 de la configuración de la tarea. Esto indica a N-EUREKA que utilice la memoria TCDM (Tightly Coupled Data Memory) para almacenar los datos de entrada, salida y pesos durante la operación de convolución. La TCDM es una memoria rápida y cercana al clúster, lo que permite un acceso más eficiente a los datos y mejora el rendimiento de la operación de convolución.
+  task->infeat_ptr = (uint32_t)input; // input es la dirección donde N-EUREKA leerá los datos de entrada para la operación de convolución. Se está asignando esta dirección al campo infeat_ptr de la tarea, que indica a N-EUREKA dónde encontrar los datos de entrada en la memoria.
+  task->outfeat_ptr = (uint32_t)output; // output es la dirección donde N-EUREKA almacenará los resultados de la operación de convolución.
+  task->weights_ptr = (uint32_t)packed_weights; // Guarda la dirección de los pesos empaquetados, estos pesos ya vienen en el formato especial de N-EUREKA, generado por generate_model.py.
+  task->scale_ptr = (uint32_t)scale_l1; // Dirección del arreglo de escalas.
+  task->scale_shift_ptr = 0; // Dirección del arreglo de shifts, no se usa en este ejemplo.
+  task->scale_bias_ptr = (uint32_t)bias_l1; // Dirección del arreglo de bias.
   return 0;
 }
+
+/*
+
+Orden general:
+  1. nnx_task_init(...)
+    limpia/inicializa la tarea
+
+  2. crear descriptors:
+    input_desc
+    output_desc
+    weights_desc
+
+  3. nnx_conv_1x1 / nnx_conv_3x3 / nnx_conv_3x3_dw
+    configura la tarea según el tipo de convolución
+
+  4. nnx_norm_quant(...)
+    configura ReLU, shift, cuantización
+
+  5. llenar punteros:
+    input, output, weights, scale, bias
+
+  6. nnx_offload(...)
+    escribe la tarea/configuración en registros de N-EUREKA
+
+  7. nnx_run_blocking(...)
+    lanza N-EUREKA y espera a que termine
+
+*/
 
 static uint32_t execute_layer(const layer_config_t *layer, uint8_t *input,
                               uint8_t *output, uint8_t *packed_weights) {

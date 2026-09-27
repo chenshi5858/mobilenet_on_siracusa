@@ -179,6 +179,131 @@ convolución*/
 }
 
 /*
+La tarea completa tiene la estructura:
+
+typedef struct {
+    uint32_t weights_ptr;
+    uint32_t infeat_ptr;
+    uint32_t outfeat_ptr;
+    uint32_t scale_ptr;
+    uint32_t scale_shift_ptr;
+    uint32_t scale_bias_ptr;
+    nnx_cfg_t cfg;
+} nnx_task_t;
+
+y dentro de cfg hay:
+
+typedef struct {
+    nnx_stride_t input_stride;
+    nnx_stride_t output_stride;
+    nnx_stride_t weights_stride;
+    nnx_subtile_t subtile;
+    uint32_t padding;
+    uint32_t weight_offset_factor;
+    uint32_t filter_mask;
+    uint32_t conf0;
+} nnx_cfg_t;
+
+donde conf0 es un registro o palabra de largo 32 que contiene varios flags de configuración.
+
+Antes, cuando hicimos:
+  nnx_feature_t input_desc
+  nnx_feature_t output_desc
+  nnx_weights_t weights_desc
+
+y luego:
+  nnx_conv_1x1(&task->cfg, weights_desc, input_desc, output_desc); 
+
+Lo que hicimos fue llenar task->cfg con la información de los strides, subtile, padding, weight_offset_factor, filter_mask y conf0.
+
+Esto no los campos del task:
+
+  task->infeat_ptr
+  task->outfeat_ptr
+  task->weights_ptr
+  task->scale_ptr
+  task->scale_shift_ptr
+  task->scale_bias_ptr
+
+Por eso después se asignan explícitamente con:
+  task->infeat_ptr = (uint32_t)input;
+  task->outfeat_ptr = (uint32_t)output;
+  task->weights_ptr = (uint32_t)packed_weights;
+  task->scale_ptr = (uint32_t)scale_l1;
+  task->scale_shift_ptr = 0;
+  task->scale_bias_ptr = (uint32_t)bias_l1;
+
+
+las funciones nnx_conv_1x1, nnx_conv_3x3 y nnx_conv_3x3_dw solo llenan task->cfg, no los punteros a los datos. Usan:
+  nnx_feature_t input_desc
+  nnx_feature_t output_desc
+  nnx_weights_t weights_desc
+
+Con eso llenan task->cfg: 
+  task->cfg.input_stride
+  task->cfg.output_stride
+  task->cfg.weights_stride
+  task->cfg.subtile
+  task->cfg.padding
+  task->cfg.weight_offset_factor
+  task->cfg.filter_mask
+  task->cfg.conf0
+
+Por ejemplo:
+
+output.height/output.width
+  sirven para calcular cuántos tiles espaciales necesita N-EUREKA
+
+input.depth
+  sirve para calcular cuántos bloques de canales de entrada hay
+
+output.depth
+  sirve para calcular cuántos canales/filtros de salida hay
+
+weights.bitwidth
+  sirve para configurar cuántos bits tienen los pesos
+
+weights.offset_factor
+  sirve para configurar el offset -128
+
+
+Nota: nnx_stride_t tiene la forma:
+typedef struct {
+    uint16_t stride_h;
+    uint16_t stride_w;
+    uint16_t stride_c;
+} nnx_stride_t;
+
+En donde cada stride es la cantidad de bytes que hay que avanzar en memoria para pasar al siguiente elemento en esa dimensión. Por ejemplo, si la entrada es de 32x32x3 y cada elemento es de 1 byte, entonces:
+  stride_h = 32*3 = 96
+  stride_w = 3
+  stride_c = 1
+
+La fórmula para calcular el stride es:
+  stride_h = width * depth * (bitwidth/8)
+  stride_w = depth * (bitwidth/8)
+  stride_c = (bitwidth/8)
+
+  donde depth es el número de canales, width es el ancho de la imagen y bitwidth es el ancho en bits de cada elemento o celda.
+  Esta forma de calcular el stride viene de la forma en que N-EUREKA organiza los datos en memoria, que es en el orden HWC (Height, Width, Channel).
+  Por ejemplo, los datos están en la siguiente estructura en memoria:
+  [H0W0C0, H0W0C1, H0W0C2, 
+  H0W1C0, H0W1C1, H0W1C2, 
+  H0W2C0, H0W2C1, H0W2C2, 
+  H1W0C0, H1W0C1, H1W0C2, 
+  H1W1C0, H1W1C1, H1W1C2,
+  H1W2C0, H1W2C1, H1W2C2,
+  H2W0C0, H2W0C1, H2W0C2...]
+  
+  Con C=3, cada pixel tiene 3 valores:
+  pixel (0,0): c0 c1 c2
+  pixel (0,1): c0 c1 c2
+  pixel (0,2): c0 c1 c2
+  ...
+*/
+
+
+/*
 
 Orden general:
   1. nnx_task_init(...)
@@ -204,6 +329,39 @@ Orden general:
   7. nnx_run_blocking(...)
     lanza N-EUREKA y espera a que termine
 
+Entonces, hay dos tipos de información:
+  1. Informaicón para calcular cómo se ejecuta la capa:
+
+    input_stride
+    output_stride
+    weights_stride
+    subtile
+    padding
+    weight_offset_factor
+    filter_mask
+    conf0
+  
+    Esto responde a preguntas como:
+      ¿Qué tipo de convolución es?
+      ¿Cuántos tiles hay?
+      ¿Cuántos canales?
+      ¿Cómo avanzo en memoria?
+      ¿Qué shift/ReLU/modo uso?
+  
+  2. Direcciones reales de memoria donde están los datos:
+  
+    task->infeat_ptr
+    task->outfeat_ptr
+    task->weights_ptr
+    task->scale_ptr
+    task->scale_bias_ptr
+  
+    Esto responde a preguntas como:
+      ¿Dónde está la entrada?
+      ¿Dónde está la salida?
+      ¿Dónde están los pesos?
+      ¿Dónde están los factores de escala y bias?
+  
 */
 
 static uint32_t execute_layer(const layer_config_t *layer, uint8_t *input,

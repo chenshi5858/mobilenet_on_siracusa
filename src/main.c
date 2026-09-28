@@ -366,53 +366,78 @@ Entonces, hay dos tipos de información:
 
 static uint32_t execute_layer(const layer_config_t *layer, uint8_t *input,
                               uint8_t *output, uint8_t *packed_weights) {
-  nnx_task_t task;
-  if (configure_task(&task, layer, input, output, packed_weights) != 0) {
+  /*
+  Esta función ejecuta una capa del modelo en N-EUREKA y devuelve cuántos ciclos de reloj demoró.
+  Recibe:
+
+  - layer: un puntero a la configuración de la capa que se va a ejecutar.
+  - input: un puntero a los datos de entrada de la capa.
+  - output: un puntero a los datos de salida de la capa.
+  - packed_weights: un puntero a los pesos empaquetados de la capa.
+  */
+  nnx_task_t task; // Crea una tarea N-EUREKA local en la pila para almacenar la configuración de la capa que se va a ejecutar.
+  if (configure_task(&task, layer, input, output, packed_weights) != 0) { // Llama a la función configure_task (definida anteriormente) para llenar el struct task.
     printf("Could not configure %s\n", layer->name);
     ++errors;
     return 0;
-  }
+  } // Si la función devuelve un valor distinto a 0, hubo un error.
 
-  nnx_soft_clear();
-  nnx_acquire();
-  pi_perf_reset();
-  pi_perf_start();
-  uint32_t start = pi_perf_read(PI_PERF_CYCLES);
-  nnx_offload(&task);
-  nnx_run_blocking();
-  uint32_t elapsed = pi_perf_read(PI_PERF_CYCLES) - start;
-  pi_perf_stop();
-  return elapsed;
+  nnx_soft_clear(); // Limpia los registros de N-EUREKA, sirve para dejar el acelerador en un estado conocido antes de lanzar una tarea.
+  nnx_acquire(); // Intenta adquirir/reservar N-EUREKA para usarlo. Si N-EUREKA ya está ocupado, esta función esperará hasta que esté disponible.
+  pi_perf_reset(); // Reinicia los contadores de rendimiento, para medir el tiempo de ejecución de la tarea. En este caso, se va a medir el tiempo en ciclos de reloj.
+  pi_perf_start(); // Activa los contadores de rendimiento, para empezar a medir el tiempo de ejecución de la tarea.
+  uint32_t start = pi_perf_read(PI_PERF_CYCLES); // Lee el valor actual del contador de ciclos de reloj, para tener un punto de referencia antes de ejecutar la tarea. Lo guarda como punto inicial.
+  nnx_offload(&task); // Envía la tarea configurada a N-EUREKA, escribiendo la configuración en los registros del acelerador. Esto prepara a N-EUREKA para ejecutar la tarea.
+  nnx_run_blocking(); // Lanza la ejecución de la tarea en N-EUREKA y espera a que termine. Esta función bloquea el programa hasta que N-EUREKA haya completado la tarea.
+  uint32_t elapsed = pi_perf_read(PI_PERF_CYCLES) - start; // Lee de nuevo el contador de ciclos y reta el valor inicial, esto da cuántos ciclos de reloj denmoró ejecutando la tarea.
+  pi_perf_stop(); // Detiene los contadores de rendimiento, ya no se necesita medir el tiempo..
+  return elapsed; // Devuelve el número de ciclos de reloj que tomó ejecutar la capa en N-EUREKA.
 }
 
 static void load_weights(void) {
-  memcpy(stem_weights_l1, model_stem_weights, MODEL_STEM_WEIGHTS_SIZE);
-  memcpy(dw_weights_l1, model_dw_weights, MODEL_DW_WEIGHTS_SIZE);
-  memcpy(pw_weights_l1, model_pw_weights, MODEL_PW_WEIGHTS_SIZE);
-  memcpy(head_weights_l1, model_head_weights, MODEL_HEAD_WEIGHTS_SIZE);
-  for (int channel = 0; channel < MODEL_PW_C; ++channel) {
+  /*
+  Esta función carga los pesos del modelo desde la memoria L2 a la memoria L1/TCDM, para que N-EUREKA pueda acceder a ellos rápidamente durante la ejecución de las capas.
+  */
+  memcpy(stem_weights_l1, model_stem_weights, MODEL_STEM_WEIGHTS_SIZE); // Copia los pesos de la capa stem desde model_data.c (que están en memoria L2) hacia el buffer L1.
+  /*
+    origen:  model_stem_weights
+    destino: stem_weights_l1
+    tamaño:  MODEL_STEM_WEIGHTS_SIZE bytes
+  */
+  memcpy(dw_weights_l1, model_dw_weights, MODEL_DW_WEIGHTS_SIZE); // Copia los pesos de la capa depthwise a la memoria L1.
+  memcpy(pw_weights_l1, model_pw_weights, MODEL_PW_WEIGHTS_SIZE); // Copia los pesos de la capa pointwise a la memoria L1.
+  memcpy(head_weights_l1, model_head_weights, MODEL_HEAD_WEIGHTS_SIZE); // Copia los pesos de la capa head a la memoria L1.
+  for (int channel = 0; channel < MODEL_PW_C; ++channel) { // Inicializa los factores de escala y sesgo para cada canal de salida de la capa pointwise. En este ejemplo, se establece un factor de escala de 1 y un sesgo de 0 para todos los canales, lo que significa que no se aplicará ningún ajuste a los valores de salida durante la normalización y cuantización.
     scale_l1[channel] = 1;
     bias_l1[channel] = 0;
   }
 }
 
 static void classify(uint32_t sample) {
-  uint32_t cycles[4];
-  uint32_t scores[MODEL_CLASS_COUNT] = {0};
-
-  memcpy(input_l1, model_inputs[sample], MODEL_INPUT_SIZE);
-  memset(stem_l1, 0, MODEL_STEM_SIZE);
+  /*
+  Esta función toma un índice de muestra (sample) y ejecuta las 4 capas del modelo en N-EUREKA,
+  calcula la clase preducha y verifica que todo coincida con la referencia.
+  */
+  uint32_t cycles[4]; // Arreglo para almacenar los ciclos de reloj que tomó ejecutar cada capa del modelo.
+  uint32_t scores[MODEL_CLASS_COUNT] = {0}; // Arreglo para almacenar las puntuaciones acumuladas para cada clase. Se inicializa en 0 para todas las clases antes de procesar la muestra.
+  /*
+  scores[0] -> vertical
+  scores[1] -> horizontal
+  scores[2] -> diagonal
+  */
+  memcpy(input_l1, model_inputs[sample], MODEL_INPUT_SIZE); // Copia la imagen de entrada desde model_inputs[sample] (viene de model_data.c) hacia input_l1.
+  memset(stem_l1, 0, MODEL_STEM_SIZE); // Limpia el buffer de salida de la capa stem, llenándolo con ceros. Esto asegura que no haya datos residuales de ejecuciones anteriores antes de procesar la nueva muestra.
   memset(dw_l1, 0, MODEL_DW_SIZE);
   memset(pw_l1, 0, MODEL_PW_SIZE);
   memset(head_l1, 0, MODEL_HEAD_SIZE);
 
   cycles[0] =
-      execute_layer(&layers[0], input_l1, stem_l1, stem_weights_l1);
+      execute_layer(&layers[0], input_l1, stem_l1, stem_weights_l1); // Ejecuta la primera capa (stem 3x3) del modelo en N-EUREKA, pasando los datos de entrada, el buffer de salida y los pesos correspondientes. Almacena el número de ciclos de reloj que tomó ejecutar esta capa en cycles[0].
   cycles[1] = execute_layer(&layers[1], stem_l1, dw_l1, dw_weights_l1);
   cycles[2] = execute_layer(&layers[2], dw_l1, pw_l1, pw_weights_l1);
   cycles[3] = execute_layer(&layers[3], pw_l1, head_l1, head_weights_l1);
 
-  int sample_errors = 0;
+  int sample_errors = 0; // Variable para contar el número de errores encontrados al comparar los resultados de las capas con los valores esperados.
   sample_errors += compare_tensor("stem", stem_l1,
                                   model_expected_stem[sample], MODEL_STEM_SIZE);
   sample_errors += compare_tensor("depthwise", dw_l1,
@@ -422,31 +447,52 @@ static void classify(uint32_t sample) {
   sample_errors += compare_tensor("head", head_l1,
                                   model_expected_head[sample], MODEL_HEAD_SIZE);
 
-  for (uint32_t pixel = 0; pixel < MODEL_HEAD_H * MODEL_HEAD_W; ++pixel) {
+  for (uint32_t pixel = 0; pixel < MODEL_HEAD_H * MODEL_HEAD_W; ++pixel) { 
+    /* 
+    Hace una suma global por clase sobre el feature map final. head_l1 está en formato HWC/interleaved. Como hay MODEL_CLASS_COUNT = 3, cada pixel tiene:
+      canal 0 vertical
+      canal 1 horizontal
+      canal 2 diagonal
+    Entonces:
+      head_l1[pixel * MODEL_CLASS_COUNT + channel] accede al valor de una clase en un pixel específico.
+
+    La forma de calcular la predicción es sumar todos los valores de cada clase en el feature map final y luego elegir la clase con la puntuación más alta como la predicción final.
+    Al principio, en el feature map final, cada posición espacial (píxel) tiene 3 valores:
+      [score_vertical_local, score_horizontal_local, score_diagonal_local]
+    La idea es sumar todos los scores por canal para obtener un score global por clase:
+      score_vertical_global = sum(score_vertical_local)
+      score_horizontal_global = sum(score_horizontal_local)
+      score_diagonal_global = sum(score_diagonal_local)
+    Luego, la clase predicha será la que tenga el score global más alto.
+    Entonces al final, después de la suma por canal, tenemos un vector de 3 elementos:
+      scores[0] = score_vertical_global
+      scores[1] = score_horizontal_global
+      scores[2] = score_diagonal_global
+    */
     for (uint32_t channel = 0; channel < MODEL_CLASS_COUNT; ++channel) {
       scores[channel] += head_l1[pixel * MODEL_CLASS_COUNT + channel];
     }
   }
 
-  uint32_t prediction = 0;
+  uint32_t prediction = 0; // Inicializa la predicción con la primera clase (vertical). Luego, se comparan las puntuaciones de las otras clases para determinar cuál tiene la puntuación más alta y se actualiza la predicción en consecuencia.
   for (uint32_t channel = 1; channel < MODEL_CLASS_COUNT; ++channel) {
     if (scores[channel] > scores[prediction]) {
       prediction = channel;
     }
-  }
+  } // básicamente, busca el índice del canal con la puntuación más alta en el vector scores y lo asigna a prediction.
 
   printf("\nSample %lu (%s)\n", (unsigned long)sample,
-         model_labels[model_expected_class[sample]]);
+         model_labels[model_expected_class[sample]]); // IMprime el número de sample y su clase esperada
   printf("  scores: vertical=%lu horizontal=%lu diagonal=%lu\n",
          (unsigned long)scores[0], (unsigned long)scores[1],
-         (unsigned long)scores[2]);
-  printf("  predicted: %s\n", model_labels[prediction]);
-  for (uint32_t index = 0; index < 4; ++index) {
+         (unsigned long)scores[2]); // Imprime los scores globales por clase.
+  printf("  predicted: %s\n", model_labels[prediction]); // Imprime la clase predicha por el modelo.
+  for (uint32_t index = 0; index < 4; ++index) { // Imprime el tiempo de ejecución en ciclos de reloj para cada capa del modelo.
     printf("  %-22s %lu cycles\n", layers[index].name,
            (unsigned long)cycles[index]);
   }
 
-  if (prediction != model_expected_class[sample]) {
+  if (prediction != model_expected_class[sample]) { // Compara la clase predicha con la clase esperada para la muestra actual. Si no coinciden, se considera un error de predicción.
     printf("  ERROR: wrong class\n");
     ++sample_errors;
   }
@@ -459,19 +505,76 @@ static void classify(uint32_t sample) {
 }
 
 static void cluster_entry(void *arg) {
-  (void)arg;
-  NEUREKA_CG_ENABLE();
-  NEUREKA_SETPRIORITY_NEUREKA();
-  NEUREKA_RESET_MAXSTALL();
-  NEUREKA_SET_MAXSTALL(8);
-  pi_perf_conf(1 << PI_PERF_CYCLES);
 
-  load_weights();
-  for (uint32_t sample = 0; sample < MODEL_SAMPLE_COUNT; ++sample) {
+  /*
+   Esta función es la entrada del clúster de procesamiento. Se ejecuta en el contexto del clúster y se encarga de habilitar N-EUREKA, cargar los pesos del modelo,
+   ejecutar la clasificación de todas las muestras del conjunto de datos. Al final, deshabilita N-EUREKA y termina la ejecución del clúster. Esta función
+   recibe un puntero genérico arg que no se utiliza en este caso, por lo que se hace un cast a void para evitar advertencias del compilador. Este formato es
+   típico cuando se lanza una tarea al cluster, ya que la función de entrada debe tener un prototipo específico para ser compatible con la API del clúster.
+  */
+  (void)arg; // Se hace un cast a void para evitar advertencias del compilador sobre el argumento no utilizado. Básicamente le dice al compilador: "Sí, sé que no estoy usando este argumento, y está bien".
+  NEUREKA_CG_ENABLE(); // Habilita el reloj (clock/gating) de N-EUREKA, permitiendo que el acelerador funcione. Esto es necesario antes de enviar cualquier tarea a N-EUREKA, ya que el acelerador necesita estar activo para procesar las operaciones de convolución. Básicamente enciende/habilita N-EUREKA para poder usarlo.
+  NEUREKA_SETPRIORITY_NEUREKA(); // Da prioridad a N-EUREKA en el acceso al interconnect/memoria. Como N-EUREKA necesita leer inputs, pesos y escribir outputs, esto ayuda a que tenga prioridad frente a los cores cuando compite por memoria-
+  
+  /*
+  Es como un switch binario:
+    #define NEUREKA_SETPRIORITY_CORE() \
+      *(volatile int*) (...) &= ~CLUS_CTRL_HWPE_HCI_PRIO_MASK
+
+    #define NEUREKA_SETPRIORITY_NEUREKA() \
+      *(volatile int*) (...) |= CLUS_CTRL_HWPE_HCI_PRIO_MASK
+  
+    Es decir:
+      NEUREKA_SETPRIORITY_CORE()  -> prioridad a los cores
+      NEUREKA_SETPRIORITY_NEUREKA() -> prioridad a N-EUREKA
+
+  */
+  
+  NEUREKA_RESET_MAXSTALL(); // Resetea el contador de ciclos de espera (stall) de N-EUREKA. Esto es útil para medir el rendimiento y detectar si N-EUREKA está experimentando retrasos significativos debido a la contención de recursos o problemas de memoria. Al resetear este contador, se puede obtener una medición más precisa del tiempo que N-EUREKA pasa esperando por recursos antes de ejecutar las tareas.
+  NEUREKA_SET_MAXSTALL(8); // Configura el umbral de ciclos de espera (stall) de N-EUREKA a 8. Esto significa que si N-EUREKA experimenta más de 8 ciclos de espera consecutivos, se puede considerar que hay un problema de rendimiento o contención de recursos. Este valor puede ser ajustado según las necesidades del sistema y el comportamiento esperado del acelerador. Básicamente ajusta cuánto puede esperar o cómo se regula su acceso al bus/memoria. Es una configuración de bajo nivel del HWPE/interconnect.
+  
+    
+  /*
+    1. N-EUREKA pide acceso a L1/TCDM.
+    2. Hay contención con cores u otro acceso.
+    3. N-EUREKA queda esperando: stall.
+    4. Si la espera llega al umbral configurado, por ejemplo 8 ciclos,
+      la interfaz puede ceder, reintentar, cambiar prioridad efectiva,
+      o permitir que otros masters avancen.
+    5. Después N-EUREKA continúa cuando obtiene acceso.
+  */
+  
+  /*
+  NEUREKA_SETPRIORITY_NEUREKA()
+  pone a N-EUREKA como master de mayor prioridad
+
+  NEUREKA_SET_MAXSTALL(8)
+    permite que el bus stallee al master de menor prioridad (en este caso el master de menor prioridad pasa a ser los cores) por hasta 8 ciclos
+
+  Entonces NEUREKA_SET_MAXSTALL(8) significa conceptualmente:
+    con N-EUREKA priorizada, el bus puede hacer esperar al core hasta 8 ciclos antes de aplicar su política de arbitraje
+
+
+  En resumen:
+
+      priority bit:
+        elige quién tiene prioridad: core o N-EUREKA
+
+      maxstall:
+        define cuántos ciclos el HCI puede stalleear al master de menor prioridad
+
+      con NEUREKA_SETPRIORITY_NEUREKA + MAXSTALL(8):
+        N-EUREKA tiene prioridad
+        el core puede ser postergado/stalleado hasta 8 ciclos según la política HCI
+  */
+  pi_perf_conf(1 << PI_PERF_CYCLES); // Configura el contador de rendimiento para medir sólo los ciclos de reloj.
+
+  load_weights(); // Copia los pesos empaquetados desde model_data.c/L2 hacia buffers en L1, e inicializa scale_l1 y bias_l1.
+  for (uint32_t sample = 0; sample < MODEL_SAMPLE_COUNT; ++sample) { // Recorre todos los samples de prueba y ejecuta la clasificación de cada uno, verificando los resultados y acumulando errores.
     classify(sample);
   }
 
-  NEUREKA_CG_DISABLE();
+  NEUREKA_CG_DISABLE(); // Deshabilita el reloj (clock/gating) de N-EUREKA, apagando el acelerador.
 }
 
 int main(void) {
@@ -502,3 +605,75 @@ int main(void) {
   printf("\nRESULT: FAIL - %d errors.\n", errors);
   return 1;
 }
+
+/*
+
+NOTAS:
+Actualmente, el código está usando sólo L1/TCDM para almacenar los datos de entrada, salida y pesos para ser usados por N-EUREKA. Estas líneas:
+
+  PI_L1 static uint8_t input_l1[...];
+  PI_L1 static uint8_t stem_l1[...];
+  PI_L1 static uint8_t stem_weights_l1[...];
+
+  ponen datos en L1/TCDM. Y esta línea:
+
+    BIT_SET(task->cfg.conf0, NEUREKA_FLAG_USE_TCDM);
+  
+  le dice a N-EUREKA:
+    lee los pesos desde TCDM/L1
+
+  Mapa mental:
+
+    L1 / TCDM:
+      memoria compartida entre cores RISC-V y N-EUREKA
+      aquí están ahora inputs, outputs, feature maps y pesos
+
+    WEIGHTMEM_MRAM:
+      MRAM del subsistema de pesos de N-EUREKA
+      dirección base aprox: 0x10400020
+
+    WEIGHTMEM_SRAM:
+      SRAM del subsistema de pesos de N-EUREKA
+      dirección base aprox: 0x10800020
+
+  Para mover pesos a MRAM o SRAM de N-EUREKA tendríamos que:
+    1. No copiarlos a stem_weights_l1, dw_weights_l1, etc.
+    2. Copiarlos/escribirlos en WEIGHT_MEM_BASE + MRAM_OFFSET o WEIGHT_MEM_BASE + SRAM_OFFSET.
+    3. Cambiar el flag:
+      BIT_SET(task->cfg.conf0, NEUREKA_FLAG_USE_WMEM);
+    4. Pasar ese puntero como task->weights_ptr.
+  
+  Ejemplo:
+
+    #define WEIGHT_MEM_BASE 0x10400020
+    #define MRAM_OFFSET 0x00000000
+    #define SRAM_OFFSET 0x00400000 // definidos en pulp_nnx_hal.h
+
+    uint8_t *weights_wmem = (uint8_t *)(WEIGHT_MEM_BASE + MRAM_OFFSET);
+    memcpy(weights_wmem, model_stem_weights, MODEL_STEM_WEIGHTS_SIZE);
+
+    BIT_SET(task->cfg.conf0, NEUREKA_FLAG_USE_WMEM);
+    task->weights_ptr = (uint32_t)weights_mram;
+
+
+  Si queremos definir varios pesos (distintas capas) en MRAM/SRAM, en lugar de usar direcciones absolutas
+  (para evitar sobreescribir pesos entre capas, solapamiento) podemos hacer:
+    __attribute__((section(".weightmem_mram"), aligned(32))) // Pone el arreglo en la sección llamada .weightmem_mram. Y en el linker script de Siracusam esa sección está asociada a la región de memoria WEIGHTMEM_MRAM. Entonces esta variable queda ubicada en la MRAM del subsistema de pesos N-EUREKA. aligned(32) asegura que la dirección de inicio del arreglo esté alineada a 32 bytes, lo cual es un requisito para N-EUREKA, porque N-EUREKA accede a los pesos en bloques de 32 bytes. Esto evita problemas de alineación y garantiza un acceso eficiente a la memoria.
+    static uint8_t stem_weights_mram[MODEL_STEM_WEIGHTS_SIZE];
+
+    __attribute__((section(".weightmem_mram"), aligned(32)))
+    static uint8_t dw_weights_mram[MODEL_DW_WEIGHTS_SIZE];
+
+    __attribute__((section(".weightmem_mram"), aligned(32)))
+    static uint8_t pw_weights_mram[MODEL_PW_WEIGHTS_SIZE];
+
+    __attribute__((section(".weightmem_mram"), aligned(32)))
+    static uint8_t head_weights_mram[MODEL_HEAD_WEIGHTS_SIZE];
+
+  Esto pondría cada arreglo en la sección de MRAM, y el linker colocaría cada uno en una dirección distinta, evitando solapamientos. Luego, en load_weights() haríamos:
+
+    memcpy(stem_weights_mram, model_stem_weights, MODEL_STEM_WEIGHTS_SIZE);
+    memcpy(dw_weights_mram, model_dw_weights, MODEL_DW_WEIGHTS_SIZE);
+    memcpy(pw_weights_mram, model_pw_weights, MODEL_PW_WEIGHTS_SIZE);
+    memcpy(head_weights_mram, model_head_weights, MODEL_HEAD_WEIGHTS_SIZE);
+*/

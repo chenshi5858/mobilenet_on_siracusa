@@ -578,6 +578,11 @@ static void cluster_entry(void *arg) {
 }
 
 int main(void) {
+  /*
+  main() corre en el Fabric Controller (FC) y lanza el trabajo pesado al clúster, donde está N-EUREKA. El FC se encarga
+  de inicializar el clúster, abrirlo, enviar la tarea de clasificación y luego cerrarlo. Al final, imprime el resultado
+  global de la ejecución, indicando si todas las muestras pasaron la verificación o si hubo errores.
+  */
   printf("Manual MiniMobileNet on Siracusa/N-EUREKA\n");
   printf("No Deeploy, no ONNX runtime, four manually scheduled layers.\n");
 

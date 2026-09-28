@@ -585,22 +585,23 @@ int main(void) {
   */
   printf("Manual MiniMobileNet on Siracusa/N-EUREKA\n");
   printf("No Deeploy, no ONNX runtime, four manually scheduled layers.\n");
+  // Declara estrucutas PMSIS
+  // Inicializa el clúster y abre la comunicación con él. Esto prepara el entorno para ejecutar tareas en el clúster, donde se encuentra N-EUREKA.
+  struct pi_device cluster; // representa el dispositivo del clúster de procesamiento, que incluye los cores RISC-V y el acelerador N-EUREKA. Se utiliza para configurar y controlar la comunicación con el clúster.
+  struct pi_cluster_conf conf; // estructura de configuración para abrir el clúster, que contiene parámetros como el ID del clúster y otras configuraciones específicas. Se utiliza para inicializar y abrir el clúster antes de enviar tareas.
+  struct pi_cluster_task task = {0}; // Estructura que representa una tarea que se enviará al clúster. Se inicializa en cero para asegurarse de que todos los campos estén limpios antes de configurar la tarea real que se ejecutará en el clúster.
 
-  struct pi_device cluster;
-  struct pi_cluster_conf conf;
-  struct pi_cluster_task task = {0};
-
-  pi_cluster_conf_init(&conf);
-  conf.id = 0;
-  pi_open_from_conf(&cluster, &conf);
-  if (pi_cluster_open(&cluster)) {
+  pi_cluster_conf_init(&conf); // Inicializa conf con valores por defecto. Para que esté en un estado conocido antes de modificarlo.
+  conf.id = 0; // Selecciona el clúster 0.
+  pi_open_from_conf(&cluster, &conf); // Asocia la configuración conf al dispositivo cluster, preparando la estructura para abrir el clúster con los parámetros especificados (aún no se abre el clúster, sólo se prepara la estructura).
+  if (pi_cluster_open(&cluster)) { // Abre el clúster de procesamiento, inicializando los cores y el acelerador N-EUREKA.
     printf("ERROR: could not open cluster\n");
     return 1;
   }
 
-  pi_cluster_task(&task, cluster_entry, NULL);
-  pi_cluster_send_task_to_cl(&cluster, &task);
-  pi_cluster_close(&cluster);
+  pi_cluster_task(&task, cluster_entry, NULL); // Configura la tarea del clúster para que ejecute la función cluster_entry, que contiene la lógica de clasificación y verificación de las muestras. El tercer argumento es NULL porque no se necesita pasar ningún argumento adicional a la función.
+  pi_cluster_send_task_to_cl(&cluster, &task); // Envía la tarea configurada al clúster para que se ejecute. Esta función bloquea hasta que la tarea haya terminado de ejecutarse en el clúster, asegurando que el programa principal espere a que se complete la clasificación de todas las muestras antes de continuar.
+  pi_cluster_close(&cluster); // Cierra el clúster de procesamiento, liberando los recursos asociados y finalizando la comunicación con el clúster. Esto asegura que el clúster esté en un estado limpio después de la ejecución de la tarea.
 
   if (errors == 0) {
     printf("\nRESULT: PASS - all samples and intermediate tensors match.\n");
